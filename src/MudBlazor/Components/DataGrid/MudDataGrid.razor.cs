@@ -1805,7 +1805,11 @@ namespace MudBlazor
                     request.CancellationToken
                 );
 
-                _currentRenderFilteredItemsCache = null;
+                //do not reset cache, the current chunk load has been cancelled, we wait for the final load
+                if (!request.CancellationToken.IsCancellationRequested)
+                {
+                    _currentRenderFilteredItemsCache = null;
+                }
 
                 return new ItemsProviderResult<IndexBag<T>>(
                     _serverData.Items.Select((item, index) => new IndexBag<T>(request.StartIndex + index, item)),
