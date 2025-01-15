@@ -80,10 +80,10 @@
         {
             _events.Add($"ServerDataFunc index : {state.StartIndex} (Cancelled)");
             return new GridData<Model>
-                {
-                    Items = [],
-                    TotalItems = 0,
-                };
+            {
+                Items = [],
+                TotalItems = 0,
+            };
         }
     }
 
@@ -101,7 +101,7 @@
                     || (x.Column2?.Contains(searchValue, StringComparison.OrdinalIgnoreCase) ?? false)
                 );
         }
-        return (_gridComponentReference?.ReloadServerData() ?? Task.CompletedTask);
+        return _gridComponentReference?.ReloadServerData() ?? Task.CompletedTask;
     }
 
     public record Model(int Index, string Column2);
