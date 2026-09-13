@@ -1,5 +1,7 @@
 ﻿using AwesomeAssertions;
 using Bunit;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using MudBlazor.Docs.Examples;
 using MudBlazor.UnitTests.TestComponents.ChipSet;
 using NUnit.Framework;
@@ -547,6 +549,130 @@ namespace MudBlazor.UnitTests.Components
             comp.Find("#chip-2").KeyDown("Backspace");
             onCloseCount.Should().Be(0);
             comp.FindComponent<MudChipSet<string>>().Instance.SelectedValues.Should().HaveCount(0);
+        }
+        /// <summary>
+        /// Clicking one chip must re-render only that chip, not every chip in the set.
+        /// </summary>
+        /// <remarks>
+        /// The set walks every chip whenever the selection changes, and each chip used to render unconditionally in response.
+        /// Nothing a chip renders depends on another chip, so the ones whose own state did not change have nothing new to show.
+        /// </remarks>
+        [Test]
+        public void ChipSet_SelectingOneChip_RendersOnlyThatChip()
+        {
+            const int Count = 10;
+            var passes = new int[Count];
+            var comp = Context.Render<MudChipSet<int>>(parameters => parameters
+                .Add(x => x.SelectionMode, SelectionMode.SingleSelection)
+                .Add(x => x.ChildContent, builder =>
+                {
+                    for (var i = 0; i < Count; i++)
+                    {
+                        var index = i;
+                        builder.OpenComponent<MudChip<int>>(index * 4);
+                        builder.AddComponentParameter((index * 4) + 1, nameof(MudChip<int>.Value), index);
+                        builder.AddComponentParameter((index * 4) + 2, nameof(MudChip<int>.ChildContent), (RenderFragment)(content =>
+                        {
+                            passes[index]++;
+                            content.AddContent(0, index);
+                        }));
+                        builder.CloseComponent();
+                    }
+                }));
+
+            var afterMount = (int[])passes.Clone();
+            comp.FindAll(".mud-chip")[0].Click();
+
+            passes[0].Should().Be(afterMount[0] + 1, "the clicked chip has a new selected state to show");
+            for (var i = 1; i < Count; i++)
+            {
+                passes[i].Should().Be(afterMount[i], $"chip {i} did not change and should not have re-rendered");
+            }
+        }
+
+        /// <summary>
+        /// Chips in a set report their selection through aria-pressed.
+        /// </summary>
+        [Test]
+        public async Task ChipSet_ShouldExposeSelectedStateViaAriaPressed()
+        {
+            var comp = Context.Render<ChipSetSingleSelectionTest>();
+
+            comp.FindAll(".mud-chip").Should().OnlyContain(chip => chip.GetAttribute("aria-pressed") == "false");
+
+            await comp.FindAll(".mud-chip")[0].ClickAsync(new MouseEventArgs());
+
+            comp.FindAll(".mud-chip")[0].GetAttribute("aria-pressed").Should().Be("true");
+            comp.FindAll(".mud-chip")[1].GetAttribute("aria-pressed").Should().Be("false");
+        }
+
+        /// <summary>
+        /// A disabled chip in a set keeps its button role, selection state, and disabled state.
+        /// </summary>
+        [Test]
+        public void ChipSet_DisabledChip_ShouldKeepButtonSemantics()
+        {
+            var comp = Context.Render<MudChipSet<string>>(parameters => parameters
+                .Add(p => p.SelectedValue, "Milk")
+                .Add(p => p.ChildContent, builder =>
+                {
+                    builder.OpenComponent<MudChip<string>>(0);
+                    builder.AddAttribute(1, nameof(MudChip<string>.Value), "Milk");
+                    builder.AddAttribute(2, nameof(MudChip<string>.Disabled), true);
+                    builder.CloseComponent();
+                }));
+
+            var chip = comp.Find(".mud-chip");
+            chip.TagName.Should().Be("DIV");
+            chip.GetAttribute("role").Should().Be("button");
+            chip.GetAttribute("aria-pressed").Should().Be("true");
+            chip.GetAttribute("aria-disabled").Should().Be("true");
+        }
+
+        /// <summary>
+        /// A read-only set still reports each chip as a button with its selection state, but not as disabled.
+        /// </summary>
+        [Test]
+        public void ChipSet_ReadOnly_ShouldKeepButtonSemanticsWithoutDisabledState()
+        {
+            var comp = Context.Render<MudChipSet<string>>(parameters => parameters
+                .Add(p => p.ReadOnly, true)
+                .Add(p => p.SelectedValue, "Milk")
+                .Add(p => p.ChildContent, builder =>
+                {
+                    builder.OpenComponent<MudChip<string>>(0);
+                    builder.AddAttribute(1, nameof(MudChip<string>.Value), "Milk");
+                    builder.CloseComponent();
+                }));
+
+            var chip = comp.Find(".mud-chip");
+            chip.TagName.Should().Be("DIV");
+            chip.GetAttribute("role").Should().Be("button");
+            chip.GetAttribute("aria-pressed").Should().Be("true");
+            chip.HasAttribute("aria-disabled").Should().BeFalse();
+        }
+
+        /// <summary>
+        /// A chip that renders as a link inside a set is not a toggle button, so it carries no aria-pressed.
+        /// </summary>
+        [Test]
+        public void ChipSet_AnchorChip_ShouldNotExposeToggleState()
+        {
+            var comp = Context.Render<MudChipSet<string>>(parameters => parameters
+                .Add(p => p.ChildContent, builder =>
+                {
+                    builder.OpenComponent<MudChip<string>>(0);
+                    builder.AddAttribute(1, nameof(MudChip<string>.Value), "Milk");
+                    builder.AddAttribute(2, nameof(MudChip<string>.Href), "https://example.com");
+                    // A clickable chip is always a button; only a non-clickable one falls back to the anchor.
+                    builder.AddAttribute(3, nameof(MudChip<string>.Disabled), true);
+                    builder.CloseComponent();
+                }));
+
+            var chip = comp.Find(".mud-chip");
+            chip.TagName.Should().Be("A");
+            chip.HasAttribute("role").Should().BeFalse();
+            chip.HasAttribute("aria-pressed").Should().BeFalse();
         }
     }
 }

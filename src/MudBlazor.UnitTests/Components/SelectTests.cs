@@ -1,8 +1,11 @@
 ﻿using AngleSharp.Dom;
 using AwesomeAssertions;
 using Bunit;
+using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Extensions;
+using MudBlazor.Resources;
 using MudBlazor.UnitTests.Dummy;
 using MudBlazor.UnitTests.TestComponents.Select;
 using MudBlazor.UnitTests.TestData;
@@ -14,6 +17,65 @@ namespace MudBlazor.UnitTests.Components
     [TestFixture]
     public class SelectTests : BunitTest
     {
+        /// <summary>
+        /// Select owns popup keyboard navigation without installing an interceptor for every option.
+        /// </summary>
+        [Test]
+        public async Task SelectOptions_DoNotRegisterKeyInterceptors()
+        {
+            var keyInterceptorService = Context.AddKeyInterceptorService();
+            var comp = Context.Render<SelectTest1>();
+            var observersWhileClosed = keyInterceptorService.ObserversCount;
+
+            await comp.Find("div.mud-input-control").MouseDownAsync();
+            await comp.WaitForAssertionAsync(() => comp.FindComponents<MudListItem<string>>().Should().HaveCount(4));
+
+            comp.FindComponents<MudListItem<string>>().Should().OnlyContain(x => !x.Instance.KeyboardEnabled);
+            keyInterceptorService.ObserversCount.Should().Be(observersWhileClosed);
+        }
+
+        /// <summary>
+        /// A select with nothing to present must build its option list once, not twice (#13519).
+        /// </summary>
+        /// <remarks>
+        /// MudSelect renders ChildContent twice per pass, once for the popup list and once for the shadow items.
+        /// A second render on mount would double that, and no item can be diffed away because each one is handed a fresh ChildContent delegate.
+        /// </remarks>
+        [Test]
+        public void Select_WithoutResolvableValue_BuildsItemsOnce()
+        {
+            var passes = 0;
+            Context.Render<MudSelect<string>>(parameters => parameters
+                .Add(x => x.ChildContent, builder =>
+                {
+                    passes++;
+                    builder.OpenComponent<MudSelectItem<string>>(0);
+                    builder.AddComponentParameter(1, nameof(MudSelectItem<string>.Value), "Espresso");
+                    builder.CloseComponent();
+                }));
+
+            passes.Should().Be(2);
+        }
+
+        /// <summary>
+        /// A select whose value resolves to an item still renders that item's content, which is why the extra render on mount exists.
+        /// </summary>
+        [Test]
+        public void Select_WithResolvableValue_RendersTheSelectedItemContent()
+        {
+            var comp = Context.Render<MudSelect<string>>(parameters => parameters
+                .Add(x => x.Value, "Espresso")
+                .Add(x => x.ChildContent, builder =>
+                {
+                    builder.OpenComponent<MudSelectItem<string>>(0);
+                    builder.AddComponentParameter(1, nameof(MudSelectItem<string>.Value), "Espresso");
+                    builder.AddComponentParameter(2, nameof(MudSelectItem<string>.ChildContent), (RenderFragment)(content => content.AddContent(0, "A short black")));
+                    builder.CloseComponent();
+                }));
+
+            comp.Markup.Should().Contain("A short black");
+        }
+
         [Test]
         public async Task Select_CheckListClass()
         {
@@ -778,6 +840,131 @@ namespace MudBlazor.UnitTests.Components
             validatedValue.Should().Be("2, 3");
         }
 
+        /// <summary>
+        /// Programmatic selected values changes convert each value once for custom multi-selection text.
+        /// </summary>
+        [Test]
+        public async Task MultiSelect_CustomText_ProgrammaticSelection_ConvertsEachValueOnce()
+        {
+            var conversionCount = 0;
+            var countingConversions = false;
+            IReadOnlyList<string> capturedValues = null;
+            var comp = Context.Render<MudSelect<string>>(parameters => parameters
+                .Add(x => x.MultiSelection, true)
+                .Add(x => x.ToStringFunc, value =>
+                {
+                    if (countingConversions)
+                    {
+                        conversionCount++;
+                    }
+
+                    return value is "null" or null ? null : value;
+                })
+                .Add(x => x.MultiSelectionTextFunc, values =>
+                {
+                    capturedValues = values;
+                    countingConversions = false;
+                    return string.Join("|", values.Select(value => value ?? "<null>"));
+                }));
+            var select = comp.Instance;
+
+            conversionCount = 0;
+            countingConversions = true;
+            await comp.SetParametersAndRenderAsync(parameters => parameters.Add(x => x.SelectedValues, new[] { "one", "null", (string)null }));
+
+            conversionCount.Should().Be(3);
+            capturedValues.Should().Equal("one", null, null);
+            select.ReadText.Should().Be("one|<null>|<null>");
+        }
+
+        /// <summary>
+        /// Select All converts each value once for custom multi-selection text.
+        /// </summary>
+        [Test]
+        public async Task MultiSelect_CustomText_SelectAll_ConvertsEachValueOnce()
+        {
+            var conversionCount = 0;
+            var countingConversions = false;
+            IReadOnlyList<string> capturedValues = null;
+            var localizer = Context.Services.GetRequiredService<InternalMudLocalizer>();
+            var provider = Context.Render<MudPopoverProvider>();
+            var comp = Context.Render<MudSelect<string>>(parameters => parameters
+                .Add(x => x.MultiSelection, true)
+                .Add(x => x.SelectAll, true)
+                .Add(x => x.ToStringFunc, value =>
+                {
+                    if (countingConversions)
+                    {
+                        conversionCount++;
+                    }
+
+                    return value is "null" or null ? null : value;
+                })
+                .Add(x => x.MultiSelectionTextFunc, values =>
+                {
+                    capturedValues = values;
+                    countingConversions = false;
+                    return string.Join("|", values.Select(value => value ?? "<null>"));
+                })
+                .AddChildContent<MudSelectItem<string>>(item => item.Add(x => x.Value, "one"))
+                .AddChildContent<MudSelectItem<string>>(item => item.Add(x => x.Value, "two")));
+            var select = comp.Instance;
+
+            await comp.Find("div.mud-input-control").MouseDownAsync();
+            await provider.WaitForAssertionAsync(() => provider.FindAll("div.mud-list-item").Count.Should().BeGreaterThan(0));
+            var selectAllItem = provider.FindComponent<MudListItem<string>>();
+            selectAllItem.Instance.Text.Should().Be(localizer[LanguageResource.MudSelect_SelectAll]);
+
+            conversionCount = 0;
+            countingConversions = true;
+            await provider.FindAll("div.mud-list-item")[0].ClickAsync();
+
+            conversionCount.Should().Be(2);
+            capturedValues.Should().Equal("one", "two");
+            select.ReadText.Should().Be("one|two");
+            select.SelectAllText.Should().Be("");
+        }
+
+        /// <summary>
+        /// Multi-selection text updates convert each value once when MultiSelection changes.
+        /// </summary>
+        [Test]
+        public async Task MultiSelect_CustomText_TextUpdate_ConvertsEachValueOnce()
+        {
+            var conversionCount = 0;
+            var countingConversions = false;
+            IReadOnlyList<string> capturedValues = null;
+            var comp = Context.Render<MudSelect<string>>(parameters => parameters
+                .Add(x => x.MultiSelection, true)
+                .Add(x => x.SelectedValues, new[] { "one", "null", (string)null })
+                .Add(x => x.ToStringFunc, value =>
+                {
+                    if (countingConversions)
+                    {
+                        conversionCount++;
+                    }
+
+                    return value is "null" or null ? null : value;
+                })
+                .Add(x => x.MultiSelectionTextFunc, values =>
+                {
+                    capturedValues = values;
+                    countingConversions = false;
+                    return string.Join("|", values.Select(value => value ?? "<null>"));
+                }));
+
+            conversionCount = 0;
+            countingConversions = true;
+            await comp.SetParametersAndRenderAsync(parameters => parameters.Add(x => x.MultiSelection, false));
+            conversionCount = 0;
+            countingConversions = true;
+            await comp.SetParametersAndRenderAsync(parameters => parameters.Add(x => x.MultiSelection, true));
+
+            conversionCount.Should().Be(3);
+            capturedValues.Should().Equal("one", null, null);
+            comp.Instance.ReadText.Should().Be("one|<null>|<null>");
+        }
+
         [Test]
         public async Task MultiSelect_SelectAll()
         {
@@ -810,6 +997,7 @@ namespace MudBlazor.UnitTests.Components
             var select = comp.FindComponent<MudSelect<string>>();
             var menu = comp.Find("div.mud-popover");
             var input = comp.Find("div.mud-input-control");
+            select.Instance.SelectAllText.Should().Be("Select all felines");
             // Open the menu
             await input.MouseDownAsync();
             menu.ClassList.Should().Contain("mud-popover-open");
@@ -817,6 +1005,7 @@ namespace MudBlazor.UnitTests.Components
             // get the first (select all item) and check if it is selected
             var selectAllItem = comp.FindComponent<MudListItem<string>>();
             selectAllItem.Instance.Icon.Should().Be("<path d=\"M0 0h24v24H0z\" fill=\"none\"/><path d=\"M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z\"/>");
+            selectAllItem.Instance.Text.Should().Be("Select all felines");
 
             // Check that all normal select items are actually selected
             var items = comp.FindComponents<MudSelectItem<string>>().Where(x => x.Instance.HideContent == false).ToArray();
@@ -845,12 +1034,14 @@ namespace MudBlazor.UnitTests.Components
             var select = comp.FindComponent<MudSelect<string>>();
             var menu = comp.Find("div.mud-popover");
             var input = comp.Find("div.mud-input-control");
+            select.Instance.SelectAllText.Should().Be("Select all felines");
             // Open the menu
             await input.MouseDownAsync();
             menu.ClassList.Should().Contain("mud-popover-open");
             // Check that the icon corresponds to an unchecked checkbox
             var mudListItem = comp.FindComponent<MudListItem<string>>();
             mudListItem.Instance.Icon.Should().Be("<path d=\"M0 0h24v24H0z\" fill=\"none\"/><path d=\"M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z\"/>");
+            mudListItem.Instance.Text.Should().Be("Select all felines");
         }
 
         [Test]
@@ -1157,11 +1348,12 @@ namespace MudBlazor.UnitTests.Components
         [Test]
         public async Task Select_Should_SetRequiredTrue()
         {
+            var localizer = Context.Services.GetRequiredService<InternalMudLocalizer>();
             var comp = Context.Render<SelectRequiredTest>();
             var select = comp.FindComponent<MudSelect<string>>().Instance;
             select.Required.Should().BeTrue();
             await comp.InvokeAsync(() => select.ValidateAsync());
-            select.ValidationErrors.First().Should().Be("Required");
+            select.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
         }
 
         /// <summary>
@@ -1170,6 +1362,7 @@ namespace MudBlazor.UnitTests.Components
         [Test]
         public async Task Select_Required_Should_ShowValidationError_OnFocusOut()
         {
+            var localizer = Context.Services.GetRequiredService<InternalMudLocalizer>();
             var comp = Context.Render<SelectRequiredTest>();
             var select = comp.FindComponent<MudSelect<string>>().Instance;
             select.Required.Should().BeTrue();
@@ -1178,7 +1371,7 @@ namespace MudBlazor.UnitTests.Components
             await comp.InvokeAsync(async () => await comp.Find($"#{select.ElementId}").TriggerEventAsync("onfocusout", new FocusEventArgs()));
             select.Touched.Should().BeTrue();
             select.HasErrors.Should().BeTrue();
-            select.ValidationErrors.First().Should().Be("Required");
+            select.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
         }
 
         /// <summary>
@@ -1749,17 +1942,18 @@ namespace MudBlazor.UnitTests.Components
         {
             //1a. Check When SelectedItems is empty - Validation Should Fail
             //Check on String type
+            var localizer = Context.Services.GetRequiredService<InternalMudLocalizer>();
             var comp = Context.Render<MultiSelectTestRequiredValue>();
             var select = comp.FindComponent<MudSelect<string>>().Instance;
             select.Required.Should().BeTrue();
             await comp.InvokeAsync(() => select.ValidateAsync());
-            select.ValidationErrors.First().Should().Be("Required");
+            select.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             //1b. Check on T type - MultiSelect of T(e.g. class object)
             var selectWithT = comp.FindComponent<MudSelect<MultiSelectTestRequiredValue.TestClass>>().Instance;
             selectWithT.Required.Should().BeTrue();
             await comp.InvokeAsync(() => selectWithT.ValidateAsync());
-            selectWithT.ValidationErrors.First().Should().Be("Required");
+            selectWithT.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             //2a. Now check when SelectedItems is greater than one - Validation Should Pass
             var inputs = comp.FindAll("div.mud-input-control");
@@ -1782,14 +1976,15 @@ namespace MudBlazor.UnitTests.Components
         [Test]
         public async Task MultiSelectClearAndReset()
         {
+            var localizer = Context.Services.GetRequiredService<InternalMudLocalizer>();
             var comp = Context.Render<MultiSelectTestRequiredValue>();
             var select = comp.FindComponent<MudSelect<string>>().Instance;
             select.Required.Should().BeTrue();
             await comp.InvokeAsync(() => select.ValidateAsync());
-            select.ValidationErrors.First().Should().Be("Required");
+            select.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             await comp.Find("#clear-string").ClickAsync();
-            select.ValidationErrors.First().Should().Be("Required");
+            select.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             await comp.Find("#reset-string").ClickAsync();
             select.ValidationErrors.Should().BeEmpty();
@@ -1808,7 +2003,7 @@ namespace MudBlazor.UnitTests.Components
 
             select.Value.Should().BeNullOrEmpty();
             select.GetState(x => x.SelectedValues).Should().BeEmpty();
-            select.ValidationErrors.First().Should().Be("Required");
+            select.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             //test resetting string values
             inputs = comp.FindAll("div.mud-input-control");
@@ -1829,10 +2024,10 @@ namespace MudBlazor.UnitTests.Components
             var select2 = comp.FindComponent<MudSelect<MultiSelectTestRequiredValue.TestClass>>().Instance;
             select2.Required.Should().BeTrue();
             await comp.InvokeAsync(() => select2.ValidateAsync());
-            select2.ValidationErrors.First().Should().Be("Required");
+            select2.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             await comp.Find("#clear-object").ClickAsync();
-            select2.ValidationErrors.First().Should().Be("Required");
+            select2.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             await comp.Find("#reset-object").ClickAsync();
             select2.ValidationErrors.Should().BeEmpty();
@@ -1848,7 +2043,7 @@ namespace MudBlazor.UnitTests.Components
             await comp.Find("#clear-object").ClickAsync();
 
             select2.SelectedValues.Should().BeEmpty();
-            select2.ValidationErrors.First().Should().Be("Required");
+            select2.ValidationErrors.First().Should().Be(localizer[LanguageResource.MudFormComponent_Required]);
 
             //test resetting object values
             inputs = comp.FindAll("div.mud-input-control");
@@ -2508,6 +2703,20 @@ namespace MudBlazor.UnitTests.Components
             var focusInvocation = Context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Single();
             var preventScroll = focusInvocation.Arguments.OfType<bool>().Single();
             preventScroll.Should().BeFalse();
+        }
+
+        /// <summary>
+        /// A closed select omits aria-controls because its listbox is not rendered (#13760).
+        /// </summary>
+        [Test]
+        public void Select_ShouldNotReferenceListbox_WhileClosed()
+        {
+            var comp = Context.Render<MudSelect<string>>(parameters => parameters.Add(p => p.Label, "Closed select"));
+
+            var input = comp.Find("input");
+            input.GetAttribute("aria-expanded").Should().Be("false");
+            // The listbox is not rendered while closed, so aria-controls would be a dangling reference.
+            input.HasAttribute("aria-controls").Should().BeFalse();
         }
     }
 }

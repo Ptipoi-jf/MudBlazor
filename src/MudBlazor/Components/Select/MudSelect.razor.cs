@@ -5,6 +5,7 @@
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using MudBlazor.Extensions;
+using MudBlazor.Resources;
 using MudBlazor.Services;
 using MudBlazor.State;
 using MudBlazor.Utilities;
@@ -43,6 +44,9 @@ namespace MudBlazor
 
         /// <inheritdoc />
         object IMudShadowSelect.SelectContext => _context;
+
+        [Inject]
+        private InternalMudLocalizer Localizer { get; set; } = null!;
 
         public MudSelect()
         {
@@ -274,7 +278,7 @@ namespace MudBlazor
         /// </remarks>
         [Parameter]
         [Category(CategoryTypes.FormComponent.ListAppearance)]
-        public string SelectAllText { get; set; } = "Select all";
+        public string SelectAllText { get; set; } = string.Empty;
 
         /// <summary>
         /// The icon used for selected items.
@@ -529,8 +533,12 @@ namespace MudBlazor
             var attributes = new Dictionary<string, object?>(UserAttributes, StringComparer.OrdinalIgnoreCase);
             attributes.TryAdd("role", "combobox");
             attributes.TryAdd("aria-autocomplete", "none");
-            attributes.TryAdd("aria-controls", _listboxId);
             attributes.TryAdd("aria-expanded", _openState.Value ? "true" : "false");
+            if (_openState.Value)
+            {
+                // Only reference the listbox while it is rendered; a dangling IDREF is an invalid aria-controls value.
+                attributes.TryAdd("aria-controls", _listboxId);
+            }
             attributes.TryAdd("aria-haspopup", "listbox");
 
             if (!attributes.ContainsKey("aria-label") && !attributes.ContainsKey("aria-labelledby") && !string.IsNullOrWhiteSpace(Label))
@@ -844,8 +852,9 @@ namespace MudBlazor
                     //Warning. Here the Converter was not set yet
                     if (MultiSelectionTextFunc != null)
                     {
-                        await SetCustomizedTextAsync(string.Join(Delimiter, _selectedValues.Select(ConvertSet)),
-                            selectedConvertedValues: _selectedValues.Select(ConvertSet).ToList(),
+                        var convertedValues = _selectedValues.Select(ConvertSet).ToList();
+                        await SetCustomizedTextAsync(string.Join(Delimiter, convertedValues),
+                            selectedConvertedValues: convertedValues,
                             multiSelectionTextFunc: MultiSelectionTextFunc);
                     }
                     else
@@ -945,6 +954,8 @@ namespace MudBlazor
             return InvokeAsync(StateHasChanged);
         }
 
+        private string ResolvedSelectAllText() => string.IsNullOrEmpty(SelectAllText) ? Localizer[LanguageResource.MudSelect_SelectAll] : SelectAllText;
+
         private void UpdateSelectAllChecked()
         {
             if (MultiSelection && SelectAll)
@@ -1016,8 +1027,9 @@ namespace MudBlazor
 
             if (MultiSelectionTextFunc != null)
             {
-                await SetCustomizedTextAsync(string.Join(Delimiter, _selectedValues.Select(ConvertSet)),
-                    selectedConvertedValues: _selectedValues.Select(ConvertSet).ToList(),
+                var convertedValues = _selectedValues.Select(ConvertSet).ToList();
+                await SetCustomizedTextAsync(string.Join(Delimiter, convertedValues),
+                    selectedConvertedValues: convertedValues,
                     multiSelectionTextFunc: MultiSelectionTextFunc);
             }
             else
@@ -1473,10 +1485,10 @@ namespace MudBlazor
             {
                 UpdateFitContent();
             }
-            else if (firstRender)
+            else if (firstRender && (CanRenderValue || IsValueInList))
             {
-                // we need to render the initial Value which is not possible without the items
-                // which supply the RenderFragment. So in this case, a second render is necessary
+                // The first render runs before the shadow items register, so the value presenter could not resolve then.
+                // Only render again when the value now resolves to an item; otherwise the second pass rebuilds every item to produce the same output.
                 StateHasChanged();
             }
 
@@ -1602,11 +1614,15 @@ namespace MudBlazor
             // a comma separated list of selected values
             if (MultiSelectionTextFunc != null)
             {
-                return MultiSelection
-                    ? SetCustomizedTextAsync(string.Join(Delimiter, _selectedValues.Select(ConvertSet)),
-                        selectedConvertedValues: _selectedValues.Select(ConvertSet).ToList(),
-                        multiSelectionTextFunc: MultiSelectionTextFunc)
-                    : base.UpdateTextPropertyAsync(updateValue);
+                if (MultiSelection)
+                {
+                    var convertedValues = _selectedValues.Select(ConvertSet).ToList();
+                    return SetCustomizedTextAsync(string.Join(Delimiter, convertedValues),
+                        selectedConvertedValues: convertedValues,
+                        multiSelectionTextFunc: MultiSelectionTextFunc);
+                }
+
+                return base.UpdateTextPropertyAsync(updateValue);
             }
 
             return MultiSelection

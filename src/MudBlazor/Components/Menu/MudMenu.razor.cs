@@ -34,7 +34,9 @@ namespace MudBlazor
         private MudIconButton? _iconButtonActivator;
         private ElementReference _menuWrapperRef;
         private readonly List<object> _menuItems = [];
+        private readonly HashSet<object> _registeredItems = [];
         private readonly string _elementId = Identifier.Create("menu");
+        private readonly string _listId = Identifier.Create("menu-list");
         private DateTimeOffset _lastKeyboardActivation = DateTimeOffset.MinValue;
         private readonly MenuContext _menuContext;
 
@@ -387,6 +389,11 @@ namespace MudBlazor
         protected bool GetModal() => Modal ?? PopoverService.PopoverOptions.ModalOverlay;
 
         /// <summary>
+        /// The id of the popup list while it is rendered, so the activator only references an element that exists.
+        /// </summary>
+        private string? GetAriaControls() => _openState.Value ? _listId : null;
+
+        /// <summary>
         /// Gets the transition duration for the popover, using dense menus to disable animations.
         /// </summary>
         protected double GetTransitionDuration() => GetDense() ? 0 : PopoverService.PopoverOptions.Duration.TotalMilliseconds;
@@ -514,6 +521,7 @@ namespace MudBlazor
             _focusedIndex = -1;
             _lastInteractionWasKeyboard = false;
             _menuItems.Clear();
+            _registeredItems.Clear();
             await Task.Yield();
 
             if (_openState.Value)
@@ -1075,7 +1083,7 @@ namespace MudBlazor
         /// </summary>
         internal void RegisterItem(object item)
         {
-            if (!_menuItems.Contains(item))
+            if (_registeredItems.Add(item))
             {
                 _menuItems.Add(item);
             }

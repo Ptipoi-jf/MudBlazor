@@ -24,6 +24,7 @@ namespace MudBlazor
         private (double Top, double Left) _filtersMenuPosition;
         private ElementReference _headerElement;
         private ElementReference _resizerElement;
+        private bool _firstSort = true;
         private readonly string _id = Identifier.Create();
 
         // Resize state
@@ -141,6 +142,39 @@ namespace MudBlazor
             {
                 return Column?.Sortable ?? (DataGrid?.SortMode != SortMode.None);
             }
+        }
+
+        /// <summary>
+        /// The <c>aria-sort</c> value for the primary sorted header cell, or <c>null</c> otherwise.
+        /// </summary>
+        private string? GetAriaSort()
+        {
+            if (!sortable || SortDirection == SortDirection.None || Column?.PropertyName is not { } propertyName || DataGrid.SortDefinitions.Count == 0)
+            {
+                return null;
+            }
+
+            var primarySort = DataGrid.SortDefinitions.MinBy(sort => sort.Value.Index);
+            if (!string.Equals(primarySort.Key, propertyName, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var ariaSortOwner = DataGrid.RenderedColumns.FirstOrDefault(column =>
+                !column.HiddenState.Value
+                && (column.Sortable ?? (DataGrid.SortMode != SortMode.None))
+                && string.Equals(column.PropertyName, primarySort.Key, StringComparison.Ordinal));
+            if (!ReferenceEquals(Column, ariaSortOwner))
+            {
+                return null;
+            }
+
+            return SortDirection switch
+            {
+                SortDirection.Ascending => "ascending",
+                SortDirection.Descending => "descending",
+                _ => null
+            };
         }
 
         private bool resizable
@@ -479,6 +513,8 @@ namespace MudBlazor
             }
 
             var initialSortDirection = Column?.InitialSortDirection ?? SortDirection.Ascending;
+            var firstSort = _firstSort;
+            _firstSort = false;
 
             SortDirection = SortDirection switch
             {
@@ -486,7 +522,7 @@ namespace MudBlazor
                 SortDirection.Descending => DataGrid.AllowUnsorted
                     ? SortDirection.None
                     : SortDirection.Ascending,
-                _ => initialSortDirection == SortDirection.None
+                _ => initialSortDirection == SortDirection.None || !firstSort
                     ? SortDirection.Ascending
                     : initialSortDirection
             };
